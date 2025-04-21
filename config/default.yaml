@@ -5,3 +5,23 @@ data:
   processed_dir: /home/kitne/University/2lvl/NS/medplant-deepclassifier/data/processed
   train_split: 0.5
   seed: 95123
+
+model:
+  input_size: [224, 224, 3]
+  num_classes: 10  # Will be overridden by actual dataset class count
+  feature_dim: 1024
+
+training:
+  batch_size: 16
+  epochs: 10
+  learning_rate: 1e-4
+  optimizer: "adam"  # Options: "adam" or "sgdm"
+  weight_decay: 1e-5
+  dropout_rate: 0.5
+  cross_validation_folds: 10
+
+bco:
+  use_bco: true
+  population_size: 30
+  max_iterations: 100
+  binary_method: "sigmoid"
