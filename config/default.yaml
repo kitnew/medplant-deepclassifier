@@ -1,0 +1,7 @@
+data:
+  dataset_name: "indian-medicinal-leaves-dataset"
+  dataset_url: "https://www.kaggle.com/datasets/aryashah2k/indian-medicinal-leaves-dataset"
+  raw_dir: /home/kitne/University/2lvl/NS/medplant-deepclassifier/data/raw
+  processed_dir: /home/kitne/University/2lvl/NS/medplant-deepclassifier/data/processed
+  train_split: 0.5
+  seed: 95123
