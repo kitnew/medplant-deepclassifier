@@ -31,8 +31,8 @@ class DeepClassifierPipeline(nn.Module):
         super(DeepClassifierPipeline, self).__init__()
         
         # 1. Feature extraction branches
-        self.res_branch = ResidualStream(num_classes)
-        self.invres_branch = InvertedResidualStream(num_classes)
+        self.res_branch = ResidualStream(feature_dim)
+        self.invres_branch = InvertedResidualStream(feature_dim)
         
         # 2. Feature fusion module
         self.fusion = SerialBasedFeatureFusion(

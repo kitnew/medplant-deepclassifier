@@ -43,11 +43,14 @@ def train_model(
     criterion,
     optimizer,
     scheduler=None,
-    num_epochs=10,
+    num_epochs=None,
     device='cuda',
-    apply_bco=True,
+    apply_bco=None,
     save_dir='checkpoints'
 ):
+    # Use config values if parameters are not provided
+    num_epochs = num_epochs if num_epochs is not None else config.training.epochs
+    apply_bco = apply_bco if apply_bco is not None else config.bco.use_bco
     """
     Train the model with the given parameters
     
@@ -208,15 +211,22 @@ def train_model(
 def cross_validation(
     model_class,
     dataset,
-    num_folds=10,
-    batch_size=16,
-    num_epochs=10,
-    learning_rate=1e-4,
-    optimizer_type='adam',
+    num_folds=None,
+    batch_size=None,
+    num_epochs=None,
+    learning_rate=None,
+    optimizer_type=None,
     device='cuda',
-    apply_bco=True,
+    apply_bco=None,
     **model_kwargs
 ):
+    # Use config values if parameters are not provided
+    num_folds = num_folds if num_folds is not None else config.training.cross_validation_folds
+    batch_size = batch_size if batch_size is not None else config.training.batch_size
+    num_epochs = num_epochs if num_epochs is not None else config.training.epochs
+    learning_rate = float(learning_rate) if learning_rate is not None else config.training.learning_rate
+    optimizer_type = optimizer_type if optimizer_type is not None else config.training.optimizer
+    apply_bco = apply_bco if apply_bco is not None else config.bco.use_bco
     """
     Perform k-fold cross-validation
     
@@ -268,13 +278,23 @@ def cross_validation(
         
         # Initialize optimizer
         if optimizer_type.lower() == 'adam':
-            optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+            optimizer = optim.Adam(
+                model.parameters(), 
+                lr=learning_rate,
+                weight_decay=float(config.training.weight_decay)
+            )
         else:  # SGD with momentum
-            optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
+            optimizer = optim.SGD(
+                model.parameters(), 
+                lr=learning_rate, 
+                momentum=0.9,
+                weight_decay=float(config.training.weight_decay)
+            )
         
         # Initialize scheduler
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.1, patience=5, verbose=True)
+            optimizer, mode='max', factor=0.05, patience=2)
+
         
         # Train model
         model, history = train_model(
@@ -358,9 +378,9 @@ def main():
     val_size = len(train_dataset) - train_size
     train_subset, val_subset = random_split(train_dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_subset, batch_size=16, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_subset, batch_size=16, shuffle=False, num_workers=4)
-    test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False, num_workers=4)
+    train_loader = DataLoader(train_subset, batch_size=config.training.batch_size, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_subset, batch_size=config.training.batch_size, shuffle=False, num_workers=4)
+    test_loader = DataLoader(test_dataset, batch_size=config.training.batch_size, shuffle=False, num_workers=4)
     
     # Get number of classes
     num_classes = len(train_dataset.classes)
@@ -370,18 +390,33 @@ def main():
     # Initialize model
     model = DeepClassifierPipeline(
         num_classes=num_classes,
-        feature_dim=1024,
-        use_bco=True,
-        bco_population_size=30,
-        bco_max_iter=100,
+        feature_dim=config.model.feature_dim,
+        use_bco=config.bco.use_bco,
+        bco_population_size=config.bco.population_size,
+        bco_max_iter=config.bco.max_iterations,
         device=device
     )
     
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    
+    # Choose optimizer based on config
+    if config.training.optimizer.lower() == 'adam':
+        optimizer = optim.Adam(
+            model.parameters(), 
+            lr=float(config.training.learning_rate),
+            weight_decay=float(config.training.weight_decay)
+        )
+    else:  # SGD with momentum
+        optimizer = optim.SGD(
+            model.parameters(), 
+            lr=float(config.training.learning_rate), 
+            momentum=0.9,
+            weight_decay=float(config.training.weight_decay)
+        )
+        
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.1, patience=3, verbose=True)
+        optimizer, mode='max', factor=0.05, patience=3)
     
     # Train model
     logger.info("Starting training...")
@@ -392,9 +427,9 @@ def main():
         criterion=criterion,
         optimizer=optimizer,
         scheduler=scheduler,
-        num_epochs=10,
+        num_epochs=config.training.epochs,
         device=device,
-        apply_bco=True,
+        apply_bco=config.bco.use_bco,
         save_dir="checkpoints"
     )
     
@@ -438,40 +473,7 @@ def main():
     logger.info(f"Test Precision: {precision:.4f}")
     logger.info(f"Test Recall: {recall:.4f}")
     logger.info(f"Test F1 Score: {f1:.4f}")
-    
-    # Plot training history
-    plt.figure(figsize=(12, 5))
-    
-    plt.subplot(1, 2, 1)
-    plt.plot(history['train_loss'], label='Train Loss')
-    plt.plot(history['val_loss'], label='Validation Loss')
-    plt.title('Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.legend()
-    
-    plt.subplot(1, 2, 2)
-    plt.plot(history['train_acc'], label='Train Accuracy')
-    plt.plot(history['val_acc'], label='Validation Accuracy')
-    plt.title('Accuracy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Accuracy')
-    plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig('training_history.png')
-    
-    # Save feature importance visualization
-    feature_importance = model.get_feature_importance().cpu().numpy()
-    selected_features = np.sum(feature_importance)
-    
-    plt.figure(figsize=(10, 6))
-    plt.bar(range(len(feature_importance)), feature_importance)
-    plt.title(f'Feature Importance (Selected: {int(selected_features)}/{len(feature_importance)})')
-    plt.xlabel('Feature Index')
-    plt.ylabel('Importance (1=Selected, 0=Not Selected)')
-    plt.savefig('feature_importance.png')
-    
+
     logger.info("Training completed successfully!")
 
 if __name__ == "__main__":
@@ -481,11 +483,6 @@ if __name__ == "__main__":
     # fold_results = cross_validation(
     #     model_class=DeepClassifierPipeline,
     #     dataset=train_dataset,
-    #     num_folds=10,
-    #     batch_size=16,
-    #     num_epochs=10,
-    #     learning_rate=1e-4,
-    #     optimizer_type='adam',
-    #     device='cuda' if torch.cuda.is_available() else 'cpu',
-    #     apply_bco=True
+    #     device='cuda' if torch.cuda.is_available() else 'cpu'
+    #     # All other parameters will be taken from config
     # )
