@@ -12,7 +12,7 @@ class InvertedResidualBlock(nn.Module):
 
         self.end = nn.Sequential(
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True)
+            nn.ReLU()
         )
 
     def forward(self, x):
@@ -46,9 +46,9 @@ class InvertedResidualStream(nn.Module):
         # Третий блок: ReLU -> Conv3x3 -> ReLU -> Conv3x3 -> BN
         # Вход: 112x112x64 -> Выход: 112x112x64
         self.end = nn.Sequential(
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(64)
         )
@@ -58,7 +58,7 @@ class InvertedResidualStream(nn.Module):
             nn.AdaptiveAvgPool2d((1, 1)),
             nn.Flatten(),
             nn.Linear(64, 1024),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Linear(1024, num_classes)
         )
         
@@ -69,4 +69,4 @@ class InvertedResidualStream(nn.Module):
         x = self.end(x)
         
         # For feature extraction, return the features before classification
-        return self.classifier[:-2](x)
+        return self.classifier(x)

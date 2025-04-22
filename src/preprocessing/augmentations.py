@@ -47,7 +47,7 @@ train_transform = v2.Compose([
     v2.ToImage(),
     v2.ToDtype(torch.float32, scale=True),
     # Add Gaussian noise
-    #AddGaussianNoise(mean=0.0, std=0.02)
+    AddGaussianNoise(mean=0.0, std=0.02),
     v2.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))
 ])
 

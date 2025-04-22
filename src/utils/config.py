@@ -30,10 +30,9 @@ class TrainingConfig:
 
 @dataclass
 class BCOConfig:
-    use_bco: bool
     population_size: int
     max_iterations: int
-    binary_method: str
+    threshold: float
 
 @dataclass
 class Config:
@@ -73,10 +72,9 @@ class Config:
         )
         
         bco_config = BCOConfig(
-            use_bco=config_dict['bco']['use_bco'],
             population_size=config_dict['bco']['population_size'],
             max_iterations=config_dict['bco']['max_iterations'],
-            binary_method=config_dict['bco']['binary_method']
+            threshold=config_dict['bco']['threshold']
         )
         
         return cls(

@@ -183,3 +183,5 @@ cython_debug/
 *.egg-info
 src/models/data/*
 checkpoints/*
+
+*.pt

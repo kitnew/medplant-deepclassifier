@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.utils.parametrizations import weight_norm
 
 class ParallelBlock(nn.Module):
     """
@@ -51,19 +52,31 @@ class ResidualStream(nn.Module):
         # 2) Parallel Block 1 (16→16)
         self.parallel1 = ParallelBlock(in_channels=16, out_channels=16, stride=1)
 
-        # 3) Conv(16→16, k=3, s=1) → BN → ReLU
-        self.conv2 = nn.Conv2d(16, 16, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2   = nn.BatchNorm2d(16)
+        # 3) Conv(16→32, k=3, s=1) → BN → ReLU
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2   = nn.BatchNorm2d(32)
 
-        # 4) Parallel Block 2 (16→32)
-        self.parallel2 = ParallelBlock(in_channels=16, out_channels=32, stride=1)
+        # 4) Parallel Block 2 (32→32)
+        self.parallel2 = ParallelBlock(in_channels=32, out_channels=32, stride=1)
 
-        # 5) Conv(32→32, k=3, s=1) → (далее GlobalAvgPool → FC)
-        self.conv3 = nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1, bias=False)
+        # 5) Conv(32→64, k=3, s=1) → (далее GlobalAvgPool → FC)
+        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1, bias=False)
 
         # Global Average Pooling + классификатор
         self.gap = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc  = nn.Linear(32, num_classes)
+        self.flat = nn.Flatten()
+        self.fc = weight_norm(nn.Linear(64, 32))
+        self.bn_fc = nn.BatchNorm1d(32)
+        self.softmax = nn.Softmax(dim=1)
+        self.dropout = nn.Dropout(0.4)
+        self.classification = weight_norm(nn.Linear(32, num_classes))
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         # начальная свёртка
@@ -80,8 +93,11 @@ class ResidualStream(nn.Module):
 
         # финальная свёртка → GAP → FC
         x = self.conv3(x)
-        x = self.gap(x)              # [B,32,1,1]
-        x = x.view(x.size(0), -1)    # [B,32]
-        x = self.fc(x)               # [B,num_classes]
+        x = self.gap(x)              # [B,64,1,1]
+        x = self.flat(x)              # [B,64]
+        x = self.fc(x)               # [B,32]
+        x = self.bn_fc(x)            # Apply batch normalization
+        x = self.dropout(x)         # Apply dropout for regularization
+        x = self.classification(x)  # Apply classification
         return x
 

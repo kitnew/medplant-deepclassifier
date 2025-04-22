@@ -32,7 +32,7 @@ class ResidualBlock(nn.Module):
         
         # Batch normalization for second block (only one as per specification)
         self.bn = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU()
 
     def forward(self, x):
         identity = x
@@ -74,7 +74,7 @@ class ResidualStream(nn.Module):
         self.initial = nn.Sequential(
             nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1, bias=False),  # Conv 1
             nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True)
+            nn.ReLU()
         )
         
         # Расширяем архитектуру до 22 сверточных слоев и ~45 слоев всего
@@ -117,7 +117,7 @@ class ResidualStream(nn.Module):
         # Упомянуто в спецификации: "extra connections are created between the grouped convolution layer"
         self.grouped_conv = nn.Conv2d(64, 512, kernel_size=3, stride=2, padding=1, groups=32, bias=False)  # Conv 23-24
         self.bn = nn.BatchNorm2d(512)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU()
 
         # Финальные слои с дополнительными соединениями
         # "extra connections are created between the grouped convolution layer and the fully connected, 

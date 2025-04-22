@@ -21,7 +21,6 @@ training:
   cross_validation_folds: 10
 
 bco:
-  use_bco: true
   population_size: 100
-  max_iterations: 100
-  binary_method: "sigmoid"
+  max_iterations: 1
+  threshold: 0.5

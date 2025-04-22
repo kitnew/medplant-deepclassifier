@@ -4,7 +4,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, random_split
-from torch.amp import autocast, GradScaler
 from pathlib import Path
 from tqdm import tqdm
 import numpy as np
@@ -437,185 +436,121 @@ if __name__ == "__main__":
 
     criterion = nn.CrossEntropyLoss()
     
-    # Custom learning rate scheduler with warmup and cosine annealing
-    class WarmupCosineAnnealingLR:
-        def __init__(self, optimizer, warmup_epochs=3, warmup_factor=0.1, T_max=40, eta_min=1e-6):
-            self.optimizer = optimizer
-            self.warmup_epochs = warmup_epochs
-            self.warmup_factor = warmup_factor
-            self.initial_lr = optimizer.param_groups[0]['lr']
-            self.current_epoch = 0
-            self.T_max = T_max
-            self.eta_min = eta_min
-            
-            # Set initial warmup learning rate
-            self._set_warmup_lr(0)
-        
-        def _set_warmup_lr(self, epoch):
-            if epoch < self.warmup_epochs:
-                # Linear warmup
-                warmup_lr = self.initial_lr * (self.warmup_factor + 
-                                              (1 - self.warmup_factor) * epoch / self.warmup_epochs)
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = warmup_lr
-        
-        def _set_cosine_lr(self, epoch):
-            # Adjusted epoch to account for warmup
-            adjusted_epoch = epoch - self.warmup_epochs
-            # Cosine annealing formula
-            cosine_factor = 0.5 * (1 + torch.cos(torch.tensor(adjusted_epoch * torch.pi / (self.T_max - self.warmup_epochs))))
-            lr = self.eta_min + (self.initial_lr - self.eta_min) * cosine_factor
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = lr
-        
-        def step(self, metrics=None):
-            self.current_epoch += 1
-            
-            if self.current_epoch <= self.warmup_epochs:
-                self._set_warmup_lr(self.current_epoch)
-            else:
-                self._set_cosine_lr(self.current_epoch)
-        
-        def get_last_lr(self):
-            return [param_group['lr'] for param_group in self.optimizer.param_groups]
-    
-    epochs = 150
-
-    # Use Adam optimizer with weight decay for L2 regularization
-    optimizer1 = torch.optim.Adam(model.res_branch.parameters(), lr=0.001, weight_decay=3e-4)
-    scheduler1 = WarmupCosineAnnealingLR(
+    # Use Adam optimizer with lower learning rate
+    optimizer1 = torch.optim.Adam(model.res_branch.parameters(), lr=0.01)
+    scheduler1 = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer1, 
-        warmup_epochs=6,
-        warmup_factor=0.1,
-        T_max=epochs,
-        eta_min=1e-8
+        mode='max',
+        factor=0.5,
+        patience=3,  # Increase patience to allow more exploration
+        verbose=True
     )
 
-    optimizer2 = torch.optim.Adam(model.invres_branch.parameters(), lr=0.001, weight_decay=3e-4)
-    scheduler2 = WarmupCosineAnnealingLR(
+    optimizer2 = torch.optim.Adam(model.invres_branch.parameters(), lr=0.01)
+    scheduler2 = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer2, 
-        warmup_epochs=6,
-        warmup_factor=0.1,
-        T_max=epochs,
-        eta_min=1e-8
+        mode='max',
+        factor=0.5,
+        patience=3,  # Increase patience to allow more exploration
+        verbose=True
     )
-    
-    # Initialize gradient scaler for mixed precision training
-    scaler = GradScaler('cuda')
 
     def train_epoch():
         model.train()
         running_loss1 = 0.0
         running_loss2 = 0.0
-        running_loss_ensemble = 0.0
         total_samples = 0
         
-        for x_batch, y_batch in tqdm(train_loader, desc="Training"):
+        for x_batch, y_batch in train_loader:
             batch_size = x_batch.size(0)
             total_samples += batch_size
             x_batch, y_batch = x_batch.to(device), y_batch.to(device)
 
-            # Train residual branch with mixed precision
+            # Forward pass
+            logits1, logits2 = model(x_batch)
+            
+            # Calculate losses
+            batch_loss1 = criterion(logits1, y_batch)
+            batch_loss2 = criterion(logits2, y_batch)
+            
+            # Train residual branch
             optimizer1.zero_grad()
-            with autocast('cuda'):
-                # Forward pass
-                logits1, logits2, ensemble_logits = model(x_batch)
-                # Calculate loss
-                batch_loss1 = criterion(logits1, y_batch)
+            batch_loss1.backward(retain_graph=True)  # Retain graph for second backward pass
+            optimizer1.step()
             
-            # Scale and backward
-            scaler.scale(batch_loss1).backward(retain_graph=True)
-            scaler.step(optimizer1)
-            scaler.update()
-            
-            # Train inverted residual branch with mixed precision
+            # Train inverted residual branch
             optimizer2.zero_grad()
-            with autocast('cuda'):
-                # Calculate loss (reuse logits from previous forward pass)
-                batch_loss2 = criterion(logits2, y_batch)
-                # Calculate ensemble loss
-                batch_loss_ensemble = criterion(ensemble_logits, y_batch)
-            
-            # Scale and backward
-            scaler.scale(batch_loss2).backward()
-            scaler.step(optimizer2)
-            scaler.update()
+            batch_loss2.backward()
+            optimizer2.step()
             
             # Accumulate running loss
             running_loss1 += batch_loss1.item() * batch_size
             running_loss2 += batch_loss2.item() * batch_size
-            running_loss_ensemble += batch_loss_ensemble.item() * batch_size
 
-        return (running_loss1 / total_samples, 
-                running_loss2 / total_samples, 
-                running_loss_ensemble / total_samples)
+        return running_loss1 / total_samples, running_loss2 / total_samples
 
     def evaluate():
         model.eval()
         correct1 = 0
         correct2 = 0
-        correct_ensemble = 0
         with torch.no_grad():
-            for x, y in tqdm(test_loader, desc="Testing"):
+            for x, y in test_loader:
                 x, y = x.to(device), y.to(device)
 
-                logits1, logits2, ensemble_logits = model(x)
+                logits1, logits2 = model(x)
                 preds1 = logits1.argmax(dim=1)
                 preds2 = logits2.argmax(dim=1)
-                preds_ensemble = ensemble_logits.argmax(dim=1)
-                
                 correct1 += (preds1 == y).sum().item()
                 correct2 += (preds2 == y).sum().item()
-                correct_ensemble += (preds_ensemble == y).sum().item()
 
             acc1 = correct1 / len(test_loader.dataset)
             acc2 = correct2 / len(test_loader.dataset)
-            acc_ensemble = correct_ensemble / len(test_loader.dataset)
-            return acc1, acc2, acc_ensemble
+            return acc1, acc2
 
+    epochs = 20
     best_acc = 0
     start_epoch = 0
 
     def train(start_epoch=0, best_acc=0):
         for epoch in range(start_epoch, epochs):
-            loss1, loss2, loss_ensemble = train_epoch()
-            acc1, acc2, acc_ensemble = evaluate()
+            loss1, loss2 = train_epoch()
+            acc1, acc2 = evaluate()
             
-            # Print training results
+            # Calculate combined accuracy
+            combined_acc = (acc1 + acc2) / 2
+            
             print(f"Epoch [{epoch+1}/{epochs}]")
             print(f"Residual Block Loss: {loss1:.4f}, Accuracy: {acc1:.4f}")
             print(f"Inverted Residual Block Loss: {loss2:.4f}, Accuracy: {acc2:.4f}")
-            print(f"Ensemble Loss: {loss_ensemble:.4f}, Accuracy: {acc_ensemble:.4f}")
+            print(f"Combined Accuracy: {combined_acc:.4f}")
             
             # Get current learning rates
-            lr1 = scheduler1.get_last_lr()[0]
-            lr2 = scheduler2.get_last_lr()[0]
-            print(f"Learning rate 1: {lr1:.8f}")
-            print(f"Learning rate 2: {lr2:.8f}")
-            print(f"Ensemble weights: {torch.softmax(model.ensemble_weights, dim=0).detach().cpu().numpy()}")
+            lr1 = optimizer1.param_groups[0]['lr']
+            lr2 = optimizer2.param_groups[0]['lr']
+            print(f"Learning rate 1: {lr1}")
+            print(f"Learning rate 2: {lr2}")
             
-            # Step schedulers (cosine annealing doesn't need metrics)
-            scheduler1.step()
-            scheduler2.step()
+            # Step schedulers based on accuracy
+            scheduler1.step(acc1)
+            scheduler2.step(acc2)
 
             # Save if we got better accuracy
-            current_best = max(acc1, acc2, acc_ensemble)
-            if current_best > best_acc:
-                best_acc = current_best
-                print(f"New best accuracy: {best_acc:.4f} (from {'Residual' if best_acc == acc1 else 'Inverted Residual' if best_acc == acc2 else 'Ensemble'})")
-        
+            if acc1 > best_acc or acc2 > best_acc:
+                best_acc = max(acc1, acc2)
+                print(f"New best accuracy: {best_acc:.4f}")
+                
                 # Save model checkpoint
-                torch.save({
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'optimizer1_state_dict': optimizer1.state_dict(),
-                    'optimizer2_state_dict': optimizer2.state_dict(),
-                    'loss1': loss1,
-                    'loss2': loss2,
-                    'acc1': acc1,
-                    'acc2': acc2,
-                    'best_acc': best_acc
-                }, f'checkpoint_epoch_{epoch+1}_acc_{best_acc:.4f}.pt'
-                )
+                # torch.save({
+                #     'epoch': epoch,
+                #     'model_state_dict': model.state_dict(),
+                #     'optimizer1_state_dict': optimizer1.state_dict(),
+                #     'optimizer2_state_dict': optimizer2.state_dict(),
+                #     'loss1': loss1,
+                #     'loss2': loss2,
+                #     'acc1': acc1,
+                #     'acc2': acc2,
+                #     'best_acc': best_acc
+                # }, f'checkpoint_epoch_{epoch+1}_acc_{best_acc:.4f}.pt')
+
     model.train()
     train(start_epoch, best_acc)

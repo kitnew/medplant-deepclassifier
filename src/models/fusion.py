@@ -1,75 +1,63 @@
 import torch
 import torch.nn as nn
-from typing import Tuple
 
 class SerialBasedFeatureFusion(nn.Module):
-    """
-    Серіальна інтеграція ознак із двох джерел із кроковим відбором за ентропією.
-
-    Підтримує різні розміри вхідних векторів k1 та k2.
-    Поетапно конкатенує і відбирає top-1024 вимірів:
-      1) (a, b) -> fused1
-      2) (fused1, b) -> fused2
-    Обидва вектори (N×1024) передаються у незалежні класифікатори.
-    """
-    def __init__(
-        self,
-        input_dims: Tuple[int, int],  # (k1, k2)
-        fused_dim: int = 1024,
-        num_classes: int = 10
-    ):
-        super(SerialBasedFeatureFusion, self).__init__()
-        k1, k2 = input_dims
-        self.k1 = k1
-        self.k2 = k2
-        self.fused_dim = fused_dim
-
-        # Класифікатори для кожного етапу
-        self.classifier1 = nn.Sequential(
-            nn.Linear(fused_dim, 512),
-            nn.ReLU(inplace=True),
-            nn.Linear(512, num_classes)
-        )
-        self.classifier2 = nn.Sequential(
-            nn.Linear(fused_dim, 512),
-            nn.ReLU(inplace=True),
-            nn.Linear(512, num_classes)
-        )
-
-    def forward(
-        self,
-        a: torch.Tensor,  # (N, k1)
-        b: torch.Tensor   # (N, k2)
-    ):
-        N, _ = a.shape
-        assert a.shape[1] == self.k1, f"Expected a with dim {self.k1}, got {a.shape[1]}"
-        assert b.shape[1] == self.k2, f"Expected b with dim {self.k2}, got {b.shape[1]}"
-
-        # Етап 1: конкатенуємо a та b
-        S1 = torch.cat([a, b], dim=1)               # (N, k1+k2)
-        fused1 = self._select_topk_by_entropy(S1)   # (N, fused_dim)
-
-        # Етап 2: конкатенуємо fused1 та b
-        S2 = torch.cat([fused1, b], dim=1)          # (N, fused_dim+k2)
-        fused2 = self._select_topk_by_entropy(S2)   # (N, fused_dim)
-
-        # Класифікація
-        logits1 = self.classifier1(fused1)
-        logits2 = self.classifier2(fused2)
-
-        return logits1, logits2, fused1, fused2
-
-    def _select_topk_by_entropy(self, x: torch.Tensor) -> torch.Tensor:
+    def __init__(self, feature_dim: int = 1024, bins: int = 30, top_k_a: int = None, top_k_b: int = None):
         """
-        Відбір топ-k ознак за Shannon-ентропією по стовпцях матриці x.
+        :param feature_dim: кількість ознак у вхідних векторах (за замовчуванням 1024)
+        :param bins: число бінів для обчислення гістограми при оцінці ентропії
+        :param top_k_a: необов'язково — взяти лише top_k_a ознак із першого потоку
+        :param top_k_b: необов'язково — взяти лише top_k_b ознак із другого потоку
         """
-        # Нормалізація: абсолютні значення (негативні зводяться до позитивних)
-        abs_x = torch.abs(x)                                         # (N, D)
-        probs = abs_x / (abs_x.sum(dim=0, keepdim=True) + 1e-8)      # (N, D)
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.bins = bins
+        self.top_k_a = top_k_a
+        self.top_k_b = top_k_b
 
-        # Ентропія по стовпцях
-        entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=0)      # (D,)
+    def forward(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """
+        :param a: тензор розміру [N, feature_dim] з виходом із Residual block
+        :param b: тензор розміру [N, feature_dim] з виходом із Inverted Residual block
+        :return: злитий тензор розміру [N, K_a + K_b] (за замовчуванням K_a=K_b=feature_dim)
+        """
+        # обчислення ентропії по кожному стовпцю
+        H_a = self._compute_entropy(a)
+        H_b = self._compute_entropy(b)
 
-        # Вибір індексів топ-k ентропій
-        topk_idx = torch.topk(entropy, self.fused_dim, largest=True).indices
-        return x[:, topk_idx]                                        # (N, fused_dim)
+        # сортування індексів за спаданням ентропії
+        idx_a = torch.argsort(H_a, descending=True)
+        idx_b = torch.argsort(H_b, descending=True)
+
+        # опційний відбір top-k ознак
+        if self.top_k_a is not None:
+            idx_a = idx_a[:self.top_k_a]
+        if self.top_k_b is not None:
+            idx_b = idx_b[:self.top_k_b]
+
+        # селекція та конкатенація
+        a_sel = a[:, idx_a]
+        b_sel = b[:, idx_b]
+        fused = torch.cat([a_sel, b_sel], dim=1)
+        return fused
+
+    def _compute_entropy(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Оцінка ентропії кожної ознаки за гістограмним методом:
+            H = -sum(p * log(p)), p = hist_counts / sum(hist_counts)
+        :param x: [N, feature_dim]
+        :return: тензор [feature_dim] ентропій
+        """
+        N, F = x.shape
+        ent = x.new_zeros(F)
+        for j in range(F):
+            col = x[:, j]
+            mn, mx = col.min(), col.max()
+            if mn == mx:
+                # константна ознака дає нуль ентропії
+                ent[j] = 0.0
+                continue
+            hist = torch.histc(col, bins=self.bins, min=mn.item(), max=mx.item())
+            p = hist / hist.sum()
+            ent[j] = -(p * (p + 1e-12).log()).sum()
+        return ent

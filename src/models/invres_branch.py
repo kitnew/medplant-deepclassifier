@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn.utils.parametrizations import weight_norm
 
 class InvertedParallelBlock(nn.Module):
     """
@@ -61,7 +63,19 @@ class InvertedResidualStream(nn.Module):
         self.bn_final   = nn.BatchNorm2d(64)
 
         self.gap = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc  = nn.Linear(64, num_classes)
+        self.flat = nn.Flatten()
+        self.fc = weight_norm(nn.Linear(64, 32))
+        self.bn_fc = nn.BatchNorm1d(32)
+        self.softmax = nn.Softmax(dim=1)
+        self.dropout = nn.Dropout(0.4)
+        self.classification = weight_norm(nn.Linear(32, num_classes))
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
 
@@ -75,5 +89,10 @@ class InvertedResidualStream(nn.Module):
 
         x = self.relu(self.bn_final(self.conv_final(x)))
 
-        x = self.gap(x).view(x.size(0), -1)
-        return self.fc(x)
+        x = self.gap(x)
+        x = self.flat(x)
+        x = self.fc(x)
+        x = self.bn_fc(x)            # Apply batch normalization
+        x = self.dropout(x)         # Apply dropout for regularization
+        x = self.classification(x)  # Apply classification
+        return x
