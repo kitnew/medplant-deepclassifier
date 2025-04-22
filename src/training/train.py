@@ -1,4 +1,3 @@
-
 import os
 import sys
 import torch
@@ -280,20 +279,20 @@ def cross_validation(
         if optimizer_type.lower() == 'adam':
             optimizer = optim.Adam(
                 model.parameters(), 
-                lr=learning_rate,
+                lr=float(learning_rate),
                 weight_decay=float(config.training.weight_decay)
             )
         else:  # SGD with momentum
             optimizer = optim.SGD(
                 model.parameters(), 
-                lr=learning_rate, 
+                lr=float(learning_rate), 
                 momentum=0.9,
                 weight_decay=float(config.training.weight_decay)
             )
         
         # Initialize scheduler
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='max', factor=0.05, patience=2)
+            optimizer, mode='min', factor=0.05, patience=2)
 
         
         # Train model
@@ -477,12 +476,12 @@ def main():
     logger.info("Training completed successfully!")
 
 if __name__ == "__main__":
-    main()
+    #main()
     
     # Uncomment to run cross-validation instead of single training
-    # fold_results = cross_validation(
-    #     model_class=DeepClassifierPipeline,
-    #     dataset=train_dataset,
-    #     device='cuda' if torch.cuda.is_available() else 'cpu'
-    #     # All other parameters will be taken from config
-    # )
+    fold_results = cross_validation(
+        model_class=DeepClassifierPipeline,
+        dataset=train_dataset,
+        device='cuda' if torch.cuda.is_available() else 'cpu'
+        # All other parameters will be taken from config
+    )

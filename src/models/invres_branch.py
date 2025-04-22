@@ -8,34 +8,48 @@ class InvertedParallelBlock(nn.Module):
     """
     def __init__(self, in_channels, out_channels, stride=1):
         super().__init__()
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
         # Ветка 1
         self.branch1 = nn.Sequential(
             # обычная свёртка
             nn.Conv2d(in_channels,  out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.ReLU6(inplace=True),
             # depthwise (групповая) свёртка
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1,
                       groups=out_channels, bias=False),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
+            nn.ReLU6(inplace=True),
         )
         # Ветка 2 — такая же
         self.branch2 = nn.Sequential(
             nn.Conv2d(in_channels,  out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
-            nn.ReLU(inplace=True),
+            nn.ReLU6(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1,
                       groups=out_channels, bias=False),
             nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
+            nn.ReLU6(inplace=True),
         )
 
     def forward(self, x):
-        return self.branch1(x) + self.branch2(x)
+        if self.in_channels == self.out_channels:
+            identity = x
+        out1 = self.branch1(x)
+        out2 = self.branch2(x)
+
+        if self.in_channels == self.out_channels:
+            out1 += identity
+            out2 += identity
+
+        return out1 + out2
 
 class InvertedResidualStream(nn.Module):
     def __init__(self, num_classes: int):
         super().__init__()
-        self.bn0   = nn.BatchNorm2d(3)
+
+        self.bn0   = nn.BatchNorm2d(16)
         self.conv0 = nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1, bias=False)
         self.relu  = nn.ReLU(inplace=True)
 
@@ -50,8 +64,10 @@ class InvertedResidualStream(nn.Module):
         self.fc  = nn.Linear(64, num_classes)
 
     def forward(self, x):
+
+        x = self.conv0(x)
         x = self.bn0(x)
-        x = self.relu(self.conv0(x))
+        x = self.relu(x)
 
         x = self.block1(x)
         x = self.block2(x)

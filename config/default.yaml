@@ -12,9 +12,9 @@ model:
   feature_dim: 1024
 
 training:
-  batch_size: 32
-  epochs: 150
-  learning_rate: 1e-1
+  batch_size: 16
+  epochs: 10
+  learning_rate: 1e-3
   optimizer: "sgdm"  # Options: "adam" or "sgdm"
   weight_decay: 0 #1e-5
   dropout_rate: 0.2

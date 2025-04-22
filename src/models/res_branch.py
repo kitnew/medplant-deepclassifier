@@ -8,26 +8,32 @@ class ParallelBlock(nn.Module):
     """
     def __init__(self, in_channels, out_channels, stride=1, downsample=None, is_second_block=False):
         super().__init__()
+        self.proj = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels)
+        )
+
         # Ветка 1
         self.branch1 = nn.Sequential(
             nn.Conv2d(in_channels,  out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels,  out_channels, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(out_channels)
         )
         # Ветка 2 (идентичная)
         self.branch2 = nn.Sequential(
             nn.Conv2d(in_channels,  out_channels, kernel_size=3, stride=stride, padding=1, bias=False),
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels,  out_channels, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(out_channels),
-            nn.ReLU(inplace=True),
+            nn.BatchNorm2d(out_channels)
         )
 
+        self.relu = nn.ReLU(inplace=True)
+
     def forward(self, x):
-        out1 = self.branch1(x)
-        out2 = self.branch2(x)
+        identity = self.proj(x)
+        out1 = self.relu(self.branch1(x) + identity)
+        out2 = self.relu(self.branch2(x) + identity)
         return out1 + out2
 
 
@@ -78,3 +84,4 @@ class ResidualStream(nn.Module):
         x = x.view(x.size(0), -1)    # [B,32]
         x = self.fc(x)               # [B,num_classes]
         return x
+
