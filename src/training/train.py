@@ -19,7 +19,6 @@ from datetime import datetime
 # Add the src directory to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from models.pipeline import DeepClassifierPipeline
 from models.dualcnn import DualCNN
 from preprocessing.dataset import train_dataset, test_dataset
 from utils.config import Config
@@ -429,11 +428,15 @@ if __name__ == "__main__":
     #     # All other parameters will be taken from config
     # )
 
+    from models.res_branch import ResidualStream
+    from models.invres_branch import InvertedResidualStream
+
     train_loader = DataLoader(train_dataset, batch_size=config.training.batch_size, shuffle=True, num_workers=4)
     test_loader = DataLoader(test_dataset, batch_size=config.training.batch_size, shuffle=False, num_workers=4)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = DualCNN(30, 1024).to(device)
+    res_model = ResidualStream(30).to(device)
+    invres_model = InvertedResidualStream(30).to(device)
 
     criterion = nn.CrossEntropyLoss()
     
@@ -482,16 +485,16 @@ if __name__ == "__main__":
     epochs = 150
 
     # Use Adam optimizer with weight decay for L2 regularization
-    optimizer1 = torch.optim.Adam(model.res_branch.parameters(), lr=0.001, weight_decay=3e-4)
+    optimizer1 = torch.optim.Adam(res_model.parameters(), lr=0.007, weight_decay=3e-4)
     scheduler1 = WarmupCosineAnnealingLR(
         optimizer1, 
-        warmup_epochs=6,
+        warmup_epochs=8,
         warmup_factor=0.1,
         T_max=epochs,
         eta_min=1e-8
     )
 
-    optimizer2 = torch.optim.Adam(model.invres_branch.parameters(), lr=0.001, weight_decay=3e-4)
+    optimizer2 = torch.optim.Adam(invres_model.parameters(), lr=0.007, weight_decay=3e-4)
     scheduler2 = WarmupCosineAnnealingLR(
         optimizer2, 
         warmup_epochs=6,
@@ -504,10 +507,11 @@ if __name__ == "__main__":
     scaler = GradScaler('cuda')
 
     def train_epoch():
-        model.train()
+        res_model.train()
+        invres_model.train()
         running_loss1 = 0.0
         running_loss2 = 0.0
-        running_loss_ensemble = 0.0
+        
         total_samples = 0
         
         for x_batch, y_batch in tqdm(train_loader, desc="Training"):
@@ -519,7 +523,7 @@ if __name__ == "__main__":
             optimizer1.zero_grad()
             with autocast('cuda'):
                 # Forward pass
-                logits1, logits2, ensemble_logits = model(x_batch)
+                logits1 = res_model(x_batch)
                 # Calculate loss
                 batch_loss1 = criterion(logits1, y_batch)
             
@@ -531,10 +535,10 @@ if __name__ == "__main__":
             # Train inverted residual branch with mixed precision
             optimizer2.zero_grad()
             with autocast('cuda'):
-                # Calculate loss (reuse logits from previous forward pass)
+                # Forward pass
+                logits2 = invres_model(x_batch)
+                # Calculate loss
                 batch_loss2 = criterion(logits2, y_batch)
-                # Calculate ensemble loss
-                batch_loss_ensemble = criterion(ensemble_logits, y_batch)
             
             # Scale and backward
             scaler.scale(batch_loss2).backward()
@@ -544,70 +548,65 @@ if __name__ == "__main__":
             # Accumulate running loss
             running_loss1 += batch_loss1.item() * batch_size
             running_loss2 += batch_loss2.item() * batch_size
-            running_loss_ensemble += batch_loss_ensemble.item() * batch_size
 
         return (running_loss1 / total_samples, 
-                running_loss2 / total_samples, 
-                running_loss_ensemble / total_samples)
+                running_loss2 / total_samples)
 
     def evaluate():
-        model.eval()
+        res_model.eval()
+        invres_model.eval()
         correct1 = 0
         correct2 = 0
-        correct_ensemble = 0
         with torch.no_grad():
             for x, y in tqdm(test_loader, desc="Testing"):
                 x, y = x.to(device), y.to(device)
 
-                logits1, logits2, ensemble_logits = model(x)
+                logits1 = res_model(x)
+                logits2 = invres_model(x)
                 preds1 = logits1.argmax(dim=1)
                 preds2 = logits2.argmax(dim=1)
-                preds_ensemble = ensemble_logits.argmax(dim=1)
                 
                 correct1 += (preds1 == y).sum().item()
                 correct2 += (preds2 == y).sum().item()
-                correct_ensemble += (preds_ensemble == y).sum().item()
 
             acc1 = correct1 / len(test_loader.dataset)
             acc2 = correct2 / len(test_loader.dataset)
-            acc_ensemble = correct_ensemble / len(test_loader.dataset)
-            return acc1, acc2, acc_ensemble
+            return acc1, acc2
 
     best_acc = 0
     start_epoch = 0
 
     def train(start_epoch=0, best_acc=0):
         for epoch in range(start_epoch, epochs):
-            loss1, loss2, loss_ensemble = train_epoch()
-            acc1, acc2, acc_ensemble = evaluate()
+            loss1, loss2 = train_epoch()
+            acc1, acc2 = evaluate()
             
             # Print training results
             print(f"Epoch [{epoch+1}/{epochs}]")
             print(f"Residual Block Loss: {loss1:.4f}, Accuracy: {acc1:.4f}")
             print(f"Inverted Residual Block Loss: {loss2:.4f}, Accuracy: {acc2:.4f}")
-            print(f"Ensemble Loss: {loss_ensemble:.4f}, Accuracy: {acc_ensemble:.4f}")
             
             # Get current learning rates
             lr1 = scheduler1.get_last_lr()[0]
             lr2 = scheduler2.get_last_lr()[0]
             print(f"Learning rate 1: {lr1:.8f}")
             print(f"Learning rate 2: {lr2:.8f}")
-            print(f"Ensemble weights: {torch.softmax(model.ensemble_weights, dim=0).detach().cpu().numpy()}")
             
             # Step schedulers (cosine annealing doesn't need metrics)
             scheduler1.step()
             scheduler2.step()
 
             # Save if we got better accuracy
-            current_best = max(acc1, acc2, acc_ensemble)
+            current_best = max(acc1, acc2)
             if current_best > best_acc:
                 best_acc = current_best
-                print(f"New best accuracy: {best_acc:.4f} (from {'Residual' if best_acc == acc1 else 'Inverted Residual' if best_acc == acc2 else 'Ensemble'})")
+                print(f"New best accuracy: {best_acc:.4f} (from {'Residual' if best_acc == acc1 else 'Inverted Residual'})")
         
                 # Save model checkpoint
                 torch.save({
                     'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
+                    'res_model_state_dict': res_model.state_dict(),
+                    'invres_model_state_dict': invres_model.state_dict(),
                     'optimizer1_state_dict': optimizer1.state_dict(),
                     'optimizer2_state_dict': optimizer2.state_dict(),
                     'loss1': loss1,
@@ -617,5 +616,19 @@ if __name__ == "__main__":
                     'best_acc': best_acc
                 }, f'checkpoint_epoch_{epoch+1}_acc_{best_acc:.4f}.pt'
                 )
-    model.train()
+    res_model.train()
+    invres_model.train()
     train(start_epoch, best_acc)
+
+    # Load the best model checkpoint
+    checkpoint = torch.load(f'checkpoint_epoch_{epochs}_acc_{best_acc:.4f}.pt')
+    res_model.load_state_dict(checkpoint['res_model_state_dict'])
+    invres_model.load_state_dict(checkpoint['invres_model_state_dict'])
+    
+    # Set models to evaluation mode
+    res_model.eval()
+    invres_model.eval()
+    
+    
+    
+    

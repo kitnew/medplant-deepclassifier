@@ -1,146 +1,239 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.utils.data import Dataset
 from typing import Dict, Tuple, List, Optional, Union, Any
+from tqdm import tqdm
+import numpy as np
+from torch.amp import autocast, GradScaler
+import torch.optim as optim
+import pickle
 
 from models.res_branch import ResidualStream
 from models.invres_branch import InvertedResidualStream
 from models.fusion import SerialBasedFeatureFusion
-from models.classifier import MLPClassifier
 from optimization.bco import FeatureSelectionChOA
 
+from utils.config import Config
+from training.utils import WarmupCosineAnnealingLR
 
-class DeepClassifierPipeline(nn.Module):
-    """
-    Complete pipeline for medical plant image classification combining:
-    1. Data preprocessing with augmentations
-    2. Parallel feature extraction streams (Residual and Inverted Residual)
-    3. Serial feature fusion with entropy-based selection
-    4. Binary Chimp Optimization for feature selection
-    5. MLP classifier for final prediction
-    """
-    def __init__(
-        self, 
-        num_classes: int,
-        feature_dim: int = 1024,
-        use_bco: bool = True,
-        bco_population_size: int = 50,
-        bco_max_iter: int = 50,
-        bco_threshold: float = 0.5,
-        device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+class StreamsTrainingPipeline:
+    def __init__(self,
+        residual_branch: ResidualStream,
+        invresidual_branch: InvertedResidualStream,
+        train_dataset: Dataset,
+        val_dataset: Dataset,
+        test_dataset: Dataset,
+        config: Config
     ) -> None:
-        super(DeepClassifierPipeline, self).__init__()
         
-        # 1. Feature extraction branches
-        self.res_branch = ResidualStream(feature_dim)
-        self.invres_branch = InvertedResidualStream(feature_dim)
-        
-        # 2. Feature fusion module
-        self.fusion = SerialBasedFeatureFusion(
-            feature_dim=feature_dim,
-            bins=num_classes
+        self.residual_branch = residual_branch
+        self.invresidual_branch = invresidual_branch
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.test_dataset = test_dataset
+        self.config = config
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.epochs = config.training.epochs
+
+        self.criterion = nn.CrossEntropyLoss()
+
+        self.res_optimizer = torch.optim.Adam(
+            self.residual_branch.parameters(),
+            lr=config.training.residual.learning_rate,
+            weight_decay=config.training.residual.weight_decay
         )
-        
-        # 3. Final classifier
-        self.classifier = MLPClassifier(in_dim=feature_dim, num_classes=num_classes)
-        
-        # 4. BCO settings
-        self.bco_population_size = bco_population_size
-        self.bco_max_iter = bco_max_iter
-        self.bco_threshold = bco_threshold
-        self.device = device
-        
-        # 5. Feature selection mask (will be set during training)
-        self.feature_mask = None
-        self.feature_dim = feature_dim
-        
-    def forward(self, x: torch.Tensor, labels: torch.Tensor, clf: Any) -> torch.Tensor:
-        """
-        Forward pass through the complete pipeline
-        
-        Args:
-            x: Input tensor of shape [batch_size, 3, 224, 224]
-            all_feats: All features of the dataset
-            all_labels: All labels of the dataset
-            clf: Classifier to be used for feature selection
-                               (should be False during training before BCO)
-        
-        Returns:
-            Dictionary containing:
-                - 'res_features': Features from residual stream
-                - 'invres_features': Features from inverted residual stream
-                - 'fused_features': Features after fusion
-                - 'feature_mask': Binary mask indicating selected features
-                - 'selected_features': Features after applying BCO mask (if available)
-                - 'logits': Final classification logits
-                - 'probabilities': Softmax probabilities
-        """
-
-        # Extract features from both branches
-        res_features = self.res_branch(x)  # [batch_size, 1024]
-        invres_features = self.invres_branch(x)  # [batch_size, 1024]
-        
-        # Fuse features
-        fused_features = self.fusion(res_features, invres_features)
-
-        feature_mask = self.apply_bco(fused_features, self.bco_population_size, self.bco_max_iter, self.bco_threshold, self.device, fused_features, labels, clf)
-        
-        selected_features = fused_features[:, feature_mask]
-        
-        # Final classification
-        logits = self.classifier(selected_features)
-        
-        return logits
-    
-    def apply_bco(
-        self, 
-        num_features: int,
-        pop_size: int,
-        max_iter: int,
-        threshold: float,
-        device: torch.device,
-        feats: torch.Tensor,
-        labels: torch.Tensor,
-        clf: Any
-    ) -> torch.Tensor:
-
-        # Initialize BCO optimizer
-        bco = FeatureSelectionChOA(
-            num_features=num_features.size(1),
-            pop_size=pop_size,
-            max_iter=max_iter,
-            threshold=threshold,
-            device=device
+        self.invres_optimizer = torch.optim.Adam(
+            self.invresidual_branch.parameters(),
+            lr=config.training.invresidual.learning_rate,
+            weight_decay=config.training.invresidual.weight_decay
         )
+
+        self.res_scheduler = WarmupCosineAnnealingLR(
+            self.res_optimizer,
+            warmup_epochs=config.training.residual.warmup_epochs,
+            warmup_factor=config.training.residual.warmup_factor,
+            T_max=self.epochs,
+            eta_min=config.training.residual.eta_min
+        )
+
+        self.invres_scheduler = WarmupCosineAnnealingLR(
+            self.invres_optimizer,
+            warmup_epochs=config.training.invresidual.warmup_epochs,
+            warmup_factor=config.training.invresidual.warmup_factor,
+            T_max=self.epochs,
+            eta_min=config.training.invresidual.eta_min
+        )
+
+        self.scaler = GradScaler('cuda')
+
+    def train_epoch(self, model: Union[ResidualStream, InvertedResidualStream]):
+        model.train()
+        running_loss = 0.0
+        total_samples = 0
         
-        mask = bco.optimize(feats, labels, clf)
-        selected_idx = mask.nonzero(as_tuple=True)[0]
-        
-        return selected_idx
-    
-    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Extract fused features without classification
-        Useful for feature extraction during BCO optimization
-        
-        Args:
-            x: Input tensor of shape [batch_size, 3, 224, 224]
+        for x_batch, y_batch in tqdm(self.train_dataset, desc="Training"):
+            batch_size = x_batch.size(0)
+            total_samples += batch_size
+            x_batch, y_batch = x_batch.to(self.device), y_batch.to(self.device)
             
-        Returns:
-            Fused features of shape [batch_size, feature_dim]
-        """
-        res_features = self.res_branch(x)
-        invres_features = self.invres_branch(x)
-        _, _, _, fused_features = self.fusion(res_features, invres_features)
-        return fused_features
-
-    def get_feature_importance(self) -> torch.Tensor:
-        """
-        Get feature importance scores based on the BCO mask
+            optimizer = self.res_optimizer if isinstance(model, ResidualStream) else self.invres_optimizer
+            optimizer.zero_grad()
+            with autocast('cuda'):
+                logits = model(x_batch)
+                batch_loss = self.criterion(logits, y_batch)
+            
+            self.scaler.scale(batch_loss).backward()
+            self.scaler.step(optimizer)
+            self.scaler.update()
+            
+            running_loss += batch_loss.item() * batch_size
         
-        Returns:
-            Feature importance scores (1 for selected, 0 for not selected)
-        """
-        if self.feature_mask is None:
-            return torch.ones(self.feature_dim, device=self.device)
-        return self.feature_mask
+        return running_loss / total_samples
+
+    def evaluate(self, model: Union[ResidualStream, InvertedResidualStream], dataset: Dataset):
+        model.eval()
+        correct = 0
+        total = 0
+        running_loss = 0.0
+        
+        with torch.no_grad():
+            for x, y in tqdm(dataset, desc="Evaluating"):
+                x, y = x.to(self.device), y.to(self.device)
+                logits = model(x)
+                loss = self.criterion(logits, y)
+                preds = logits.argmax(dim=1)
+                correct += (preds == y).sum().item()
+                total += y.size(0)
+                running_loss += loss.item() * y.size(0)
+        
+        accuracy = correct / total
+        avg_loss = running_loss / total
+        return accuracy, avg_loss
+
+    def validate(self, model: Union[ResidualStream, InvertedResidualStream]):
+        return self.evaluate(model, self.val_dataset)
+
+    def test(self, model: Union[ResidualStream, InvertedResidualStream]):
+        return self.evaluate(model, self.test_dataset)
+
+    def train(self, model: Union[ResidualStream, InvertedResidualStream], start_epoch=0, best_acc=0):
+        scheduler = self.res_scheduler if isinstance(model, ResidualStream) else self.invres_scheduler
+        
+        for epoch in range(start_epoch, self.epochs):
+            loss = self.train_epoch(model)
+            acc = self.validate(model)
+            
+            # Print training results
+            print(f"Epoch [{epoch+1}/{self.epochs}]")
+            print(f"Loss: {loss:.4f}, Accuracy: {acc:.4f}")
+            
+            # Get current learning rates
+            lr = scheduler.get_last_lr()[0]
+            print(f"Learning rate: {lr:.8f}")
+            
+            # Step scheduler (cosine annealing doesn't need metrics)
+            scheduler.step()
+            
+            # Save if we got better accuracy
+            if acc > best_acc:
+                best_acc = acc
+                print(f"New best accuracy: {best_acc:.4f}")
+                self.save(model, f"{model.__class__.__name__}_{epoch}_{best_acc:.4f}.pth", epoch, loss, acc, best_acc)
+        
+    def save(self, model: Union[ResidualStream, InvertedResidualStream], filename: str, epoch: int, loss: float, acc: float, best_acc: float):
+        optimizer = self.res_optimizer if isinstance(model, ResidualStream) else self.invres_optimizer
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': loss,
+            'acc': acc,
+            'best_acc': best_acc
+        }, filename)
+        
+    def load(self, model: Union[ResidualStream, InvertedResidualStream], filename: str, mode: str = 'eval'):
+        checkpoint = torch.load(filename)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        if mode == 'eval':
+            model.eval()
+        elif mode == 'train':
+            model.train()
+        return {
+            'model': model,
+            'epoch': checkpoint['epoch'],
+            'loss': checkpoint['loss'],
+            'acc': checkpoint['acc'],
+            'best_acc': checkpoint['best_acc']
+        }
+
+class TrainingPipeline:
+    def __init__(self,
+        residual_branch: ResidualStream,
+        invresidual_branch: InvertedResidualStream,
+        fusion: SerialBasedFeatureFusion,
+        optimization: FeatureSelectionChOA,
+        classifier: Any,
+        train_dataset: Dataset,
+        val_dataset: Dataset,
+        test_dataset: Dataset,
+        config: Config
+    ) -> None:
+
+        self.residual_branch = residual_branch
+        self.invresidual_branch = invresidual_branch
+        self.fusion = fusion
+        self.optimization = optimization
+        self.classifier = classifier
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.test_dataset = test_dataset
+        self.config = config
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def train(self):
+        self.residual_branch.eval()
+        self.invresidual_branch.eval()
+        self.fusion.eval()
+
+        all_features = []
+        all_labels = []
+
+        with torch.no_grad():
+            for batch_imgs, batch_lbls in self.train_dataset:
+                f_res = self.residual_branch(batch_imgs)     # [B, 1024]
+                f_inv = self.invresidual_branch(batch_imgs)     # [B, 1024]
+                f_fused = self.fusion(f_res, f_inv)    # [B, 2048]
+                all_features.append(f_fused)
+                all_labels.append(batch_lbls)
+
+        # Concatenate all feature batches
+        X = torch.cat(all_features, dim=0).cpu().numpy()
+        y = torch.cat(all_labels, dim=0).cpu().numpy()
+
+        # Optimize
+        best_mask = self.optimization.optimize(X, y, self.classifier)
+
+        optimized_features = X[:, best_mask]
+
+        # Train the classifier
+        clf = self.classifier
+        clf.fit(optimized_features, y)
+
+        self.classifier = clf
+
+        self.save()
+
+    def save(self):
+        torch.save(self.residual_branch, "residual_branch.pth")
+        torch.save(self.invresidual_branch, "invresidual_branch.pth")
+        torch.save(self.fusion, "fusion.pth")
+        with open("classifier.pkl", "wb") as f:
+            pickle.dump(self.classifier, f)
+
+    def load(self):
+        self.residual_branch = torch.load("residual_branch.pth")
+        self.invresidual_branch = torch.load("invresidual_branch.pth")
+        self.fusion = torch.load("fusion.pth")
+        with open("classifier.pkl", "rb") as f:
+            self.classifier = pickle.load(f)

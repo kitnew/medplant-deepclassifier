@@ -73,3 +73,47 @@ class FeatureSelectionChOA:
         final_fitness = self._evaluate(features, labels, final_masks, classifier)
         best_idx = torch.argmax(final_fitness)
         return final_masks[best_idx].bool()
+
+if __name__ == '__main__':
+    import torch
+    from models.fusion import SerialBasedFeatureFusion
+    from sklearn.neighbors import KNeighborsClassifier as WNN
+
+    # Create random input tensors
+    N = 32  # batch size
+    feature_dim = 1024
+    a = torch.randn(N, feature_dim)
+    b = torch.randn(N, feature_dim)
+
+    top_k_a = 512
+    top_k_b = 512
+
+    # Initialize fusion module
+    fusion = SerialBasedFeatureFusion(feature_dim=feature_dim, top_k_a=top_k_a, top_k_b=top_k_b)
+
+    # Apply fusion
+    fused = fusion(a, b)
+
+    # Check output shape
+    assert fused.shape == (N, top_k_a + top_k_b), f"Expected shape {(N, top_k_a + top_k_b)}, got {fused.shape}"
+    print(f"Fusion successful. Output shape: {fused.shape}")
+    
+    # Initialize BCO
+    bco = FeatureSelectionChOA(
+        num_features=top_k_a + top_k_b,
+        pop_size=100,
+        max_iter=5,
+        threshold=0.5,
+        device=torch.device('cpu' if torch.cuda.is_available() else 'cpu')
+    )
+
+    labels = torch.randint(0, 2, (N,))
+
+    wnn = WNN()
+    wnn.fit(a, labels)
+    
+    # Apply BCO
+    mask = bco.optimize(fused, labels, wnn)
+    print(f"BCO successful. Selected features: {mask}")
+    print(f"Fused features with mask: {fused[:, mask]}")
+    print(f"Shape of fused features with mask: {fused[:, mask].shape}")
