@@ -42,8 +42,11 @@ class ResidualStream(nn.Module):
     """
     Первый поток предложенной архитектуры (Residual Stream).
     """
-    def __init__(self, num_classes: int):
+    def __init__(self, num_classes: int, num_features: int, feature_mode: bool = False):
         super().__init__()
+        self.proj = weight_norm(nn.Linear(64, num_features))
+        self.feature_mode = feature_mode
+
         # 1) Input → Conv(3→16, k=3, s=2) → BN → ReLU
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1, bias=False)
         self.bn1   = nn.BatchNorm2d(16)
@@ -95,6 +98,11 @@ class ResidualStream(nn.Module):
         x = self.conv3(x)
         x = self.gap(x)              # [B,64,1,1]
         x = self.flat(x)              # [B,64]
+        
+        if self.feature_mode:
+            x = self.proj(x)
+            return x
+
         x = self.fc(x)               # [B,32]
         x = self.bn_fc(x)            # Apply batch normalization
         x = self.dropout(x)         # Apply dropout for regularization

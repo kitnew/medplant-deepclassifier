@@ -48,8 +48,10 @@ class InvertedParallelBlock(nn.Module):
         return out1 + out2
 
 class InvertedResidualStream(nn.Module):
-    def __init__(self, num_classes: int):
+    def __init__(self, num_classes: int, num_features: int, feature_mode: bool = False):
         super().__init__()
+        self.proj = weight_norm(nn.Linear(64, num_features))
+        self.feature_mode = feature_mode
 
         self.bn0   = nn.BatchNorm2d(16)
         self.conv0 = nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1, bias=False)
@@ -91,6 +93,11 @@ class InvertedResidualStream(nn.Module):
 
         x = self.gap(x)
         x = self.flat(x)
+
+        if self.feature_mode:
+            x = self.proj(x)
+            return x
+
         x = self.fc(x)
         x = self.bn_fc(x)            # Apply batch normalization
         x = self.dropout(x)         # Apply dropout for regularization

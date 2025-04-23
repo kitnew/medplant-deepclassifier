@@ -42,3 +42,10 @@ class WarmupCosineAnnealingLR:
     
     def get_last_lr(self):
         return [param_group['lr'] for param_group in self.optimizer.param_groups]
+    
+    def set_last_lr(self, lr):
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+    
+    def set_current_epoch(self, epoch):
+        self.current_epoch = epoch

@@ -30,8 +30,8 @@ class FeatureSelectionChOA:
         with torch.no_grad():
             # Evaluate accuracy of mask on whole dataset
             fitness = torch.zeros(self.pop_size, device=self.device)
-            X_np = features.cpu().numpy()
-            y_np = labels.cpu().numpy()
+            X_np = features
+            y_np = labels
             for i in range(self.pop_size):
                 sel = masks[i].bool().cpu().numpy()
                 if sel.sum() == 0:

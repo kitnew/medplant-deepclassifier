@@ -9,24 +9,30 @@ class DataConfig:
     dataset_url: str
     raw_dir: Path
     processed_dir: Path
-    train_split: float
+    train_split: List[float]
     seed: int
 
 @dataclass
 class ModelConfig:
-    input_size: List[int]  # [height, width, channels]
+    input_size: List[int]
     num_classes: int
     feature_dim: int
+
+@dataclass
+class StreamConfig:
+    learning_rate: float
+    weight_decay: float
+    warmup_epochs: int
+    warmup_factor: float
+    eta_min: float
 
 @dataclass
 class TrainingConfig:
     batch_size: int
     epochs: int
-    learning_rate: float
-    optimizer: str
-    weight_decay: float
-    dropout_rate: float
     cross_validation_folds: int
+    residual: StreamConfig
+    invresidual: StreamConfig
 
 @dataclass
 class BCOConfig:
@@ -51,7 +57,7 @@ class Config:
             dataset_url=config_dict['data']['dataset_url'],
             raw_dir=Path(config_dict['data']['raw_dir']),
             processed_dir=Path(config_dict['data']['processed_dir']),
-            train_split=float(config_dict['data']['train_split']),
+            train_split=config_dict['data']['train_split'],
             seed=int(config_dict['data']['seed'])
         )
         
@@ -64,17 +70,27 @@ class Config:
         training_config = TrainingConfig(
             batch_size=config_dict['training']['batch_size'],
             epochs=config_dict['training']['epochs'],
-            learning_rate=config_dict['training']['learning_rate'],
-            optimizer=config_dict['training']['optimizer'],
-            weight_decay=config_dict['training']['weight_decay'],
-            dropout_rate=config_dict['training']['dropout_rate'],
-            cross_validation_folds=config_dict['training']['cross_validation_folds']
+            cross_validation_folds=config_dict['training']['cross_validation_folds'],
+            residual=StreamConfig(
+                learning_rate=float(config_dict['training']['residual']['learning_rate']),
+                weight_decay=float(config_dict['training']['residual']['weight_decay']),
+                warmup_epochs=int(config_dict['training']['residual']['warmup_epochs']),
+                warmup_factor=float(config_dict['training']['residual']['warmup_factor']),
+                eta_min=float(config_dict['training']['residual']['eta_min'])
+            ),
+            invresidual=StreamConfig(
+                learning_rate=float(config_dict['training']['invresidual']['learning_rate']),
+                weight_decay=float(config_dict['training']['invresidual']['weight_decay']),
+                warmup_epochs=int(config_dict['training']['invresidual']['warmup_epochs']),
+                warmup_factor=float(config_dict['training']['invresidual']['warmup_factor']),
+                eta_min=float(config_dict['training']['invresidual']['eta_min'])
+            )
         )
         
         bco_config = BCOConfig(
-            population_size=config_dict['bco']['population_size'],
-            max_iterations=config_dict['bco']['max_iterations'],
-            threshold=config_dict['bco']['threshold']
+            population_size=int(config_dict['bco']['population_size']),
+            max_iterations=int(config_dict['bco']['max_iterations']),
+            threshold=float(config_dict['bco']['threshold'])
         )
         
         return cls(
