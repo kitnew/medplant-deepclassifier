@@ -3,5 +3,32 @@ data:
   dataset_url: "https://www.kaggle.com/datasets/aryashah2k/indian-medicinal-leaves-dataset"
   raw_dir: /home/kitne/University/2lvl/NS/medplant-deepclassifier/data/raw
   processed_dir: /home/kitne/University/2lvl/NS/medplant-deepclassifier/data/processed
-  train_split: 0.5
+  train_split: [0.6, 0.2, 0.2]
   seed: 95123
+
+model:
+  input_size: [224, 224, 3]
+  num_classes: 30
+  feature_dim: 1024
+
+training:
+  batch_size: 16
+  epochs: 300
+  cross_validation_folds: 10
+  residual:
+    learning_rate: 1e-3
+    weight_decay: 0
+    warmup_epochs: 3
+    warmup_factor: 0.1
+    eta_min: 1e-8
+  invresidual:
+    learning_rate: 1e-3
+    weight_decay: 0
+    warmup_epochs: 3
+    warmup_factor: 0.1
+    eta_min: 1e-8
+
+bco:
+  population_size: 100
+  max_iterations: 1
+  threshold: 0.5

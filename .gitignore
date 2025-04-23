@@ -173,11 +173,16 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-*.jpg
+.jpg
 *.mp4
 *.mp3
 
-#data/raw/*
-#data/processed/*
+data/raw/*
+data/processed/*
 
 *.egg-info
+src/models/data/*
+checkpoints/*
+
+*.pt
+1.txt
