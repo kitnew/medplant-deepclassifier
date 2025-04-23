@@ -179,6 +179,7 @@ cython_debug/
 
 data/raw/*
 data/processed/*
+data/visualizations/gradcam/*
 
 *.egg-info
 src/models/data/*
