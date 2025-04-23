@@ -32,8 +32,8 @@ The purpose of this project is to reproduce the deep learning framework proposed
 
 ## 📁 Dataset
 
-The model uses the **Indian Medicinal Leaves Dataset** dataset:
-📦 [Kaggle Dataset](https://www.kaggle.com/datasets/aryashah2k/indian-medicinal-leaves-dataset)
+The model uses the **Medicinal Plant - 30 classes Dataset** dataset:
+📦 [Kaggle Dataset](https://www.kaggle.com/datasets/sharvan123/medicinal-plant)
 
 ---
 
@@ -47,14 +47,28 @@ cd medplant-deepclassifier
 # Install dependencies
 pip install -r requirements.txt
 
-# To be continued...
+# Check config in `config/default.yaml`
+
+# Download the dataset
+# 1. Download the dataset from Kaggle
+# 2. Place it in the `data/raw` directory
+# 3. Run files preparation.
+python -m src.preprocessing.file_prep
+
+# Run the training pipeline
+python -m src.training.train
+
+# Run the evaluating pipeline
+python -m src.evaluating.evaluate
+
+# Enjoy visualizations!
 ```
 
 ---
 
 ## 📊 Results & Benchmarks
 
-Coming soon — training results will be added here as modules are completed.
+You can find results in `data/visualizations` directory.
 
 ---
 
@@ -65,7 +79,8 @@ Coming soon — training results will be added here as modules are completed.
 
 ## 🧑‍💻 Contributors
 
-- [Nikita Chernysh](https://github.com/kitnew) (initial replicator)
+- [Nikita Chernysh](https://github.com/kitnew)
+- Oleksandr Holovatyi
 
 ---
 
