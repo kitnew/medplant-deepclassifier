@@ -177,11 +177,12 @@ cython_debug/
 *.mp4
 *.mp3
 
-#data/raw/*
-#data/processed/*
+data/raw/*
+data/processed/*
 
 *.egg-info
 src/models/data/*
 checkpoints/*
 
 *.pt
+1.txt
